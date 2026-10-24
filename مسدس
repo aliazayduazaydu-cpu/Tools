@@ -1,0 +1,303 @@
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local player = Players.LocalPlayer
+
+-- ===== الإعدادات =====
+local TOTAL       = 200    -- عدد القطع
+local SCALE       = 0.7    -- حجم المسدس
+local RAISE       = 0.8    -- بروز التفاصيل الجانبية
+local AIM_FLIP    = false  -- لو المسدس يطلع للخلف خلها true
+local FLIP_TOOLS  = false  -- لو رؤوس الأدوات مقلوبة خلها true
+local BATCH       = 80     -- تجهيز 80 أداة كل دفعة
+
+-- نقطة المسك داخل المسدس (وسط المقبض = مكان يد اللاعب)
+local GRIP_CENTER = Vector3.new(0, -1.5, -0.3)
+
+-- ===== الحالة =====
+local active, busy = false, false
+local tools, origGrips, origCollide = {}, {}, {}
+
+local function getParts()
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	local hand = character and (character:FindFirstChild("RightHand") or character:FindFirstChild("Right Arm"))
+	return character, humanoid, root, backpack, hand
+end
+
+-- ===== الواجهة =====
+local gui = Instance.new("ScreenGui")
+gui.Name = "GunGui"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local button = Instance.new("TextButton")
+button.Size = UDim2.fromOffset(170, 48)
+button.Position = UDim2.new(0.5, -85, 0, 20)
+button.BackgroundColor3 = Color3.fromRGB(120, 60, 200)
+button.TextColor3 = Color3.new(1, 1, 1)
+button.Font = Enum.Font.SourceSansBold
+button.TextSize = 22
+button.Text = "المسدس: إيقاف"
+button.AutoButtonColor = false
+button.Parent = gui
+
+Instance.new("UICorner", button).CornerRadius = UDim.new(0, 14)
+
+local stroke = Instance.new("UIStroke", button)
+stroke.Color = Color3.new(1, 1, 1)
+stroke.Transparency = 0.6
+stroke.Thickness = 2
+
+local gradient = Instance.new("UIGradient", button)
+gradient.Color = ColorSequence.new(Color3.fromRGB(150, 90, 255), Color3.fromRGB(70, 130, 255))
+gradient.Rotation = 45
+
+local function tween(obj, props)
+	TweenService:Create(obj, TweenInfo.new(0.2, Enum.EasingStyle.Quad), props):Play()
+end
+
+button.MouseEnter:Connect(function()
+	tween(button, {Size = UDim2.fromOffset(180, 52), Position = UDim2.new(0.5, -90, 0, 18)})
+end)
+button.MouseLeave:Connect(function()
+	tween(button, {Size = UDim2.fromOffset(170, 48), Position = UDim2.new(0.5, -85, 0, 20)})
+end)
+
+local function setButton(on)
+	button.Text = on and "المسدس: تشغيل" or "المسدس: إيقاف"
+	tween(button, {BackgroundColor3 = on and Color3.fromRGB(60, 200, 120) or Color3.fromRGB(120, 60, 200)})
+end
+
+task.spawn(function()
+	while gui.Parent do
+		gradient.Rotation = (gradient.Rotation + 1) % 360
+		task.wait(0.03)
+	end
+end)
+
+-- ===== تدوير الأداة: طولها ينطبق على محور معين من المسدس =====
+local ROT = {
+	Y = {Y = CFrame.new(), Z = CFrame.Angles(math.rad(90), 0, 0),  X = CFrame.Angles(0, 0, math.rad(-90))},
+	Z = {Y = CFrame.Angles(math.rad(-90), 0, 0), Z = CFrame.new(), X = CFrame.Angles(0, math.rad(90), 0)},
+	X = {Y = CFrame.Angles(0, 0, math.rad(90)),  Z = CFrame.Angles(0, math.rad(-90), 0), X = CFrame.new()},
+}
+
+local function longAxis(tool)
+	local handle = tool:FindFirstChild("Handle")
+	if handle and handle:IsA("BasePart") then
+		local s = handle.Size
+		if s.Z >= s.X and s.Z >= s.Y then return "Z" end
+		if s.X >= s.Y and s.X >= s.Z then return "X" end
+	end
+	return "Y"
+end
+
+local function orient(tool, target)
+	local rot = ROT[longAxis(tool)][target]
+	if FLIP_TOOLS then rot = CFrame.Angles(math.pi, 0, 0) * rot end
+	return rot
+end
+
+-- ===== تصميم المسدس =====
+-- المحاور: -Z = قدام (الفوهة)، +Y فوق، X = جنب
+-- القطع مرتبة حسب الأهمية: الشكل الأساسي أول، التفاصيل بالآخر
+local RAKE = -11 -- ميلان المقبض (درجات)
+
+local function buildGun()
+	local L = {}
+	local function add(x, y, z, axis, tilt)
+		table.insert(L, {pos = Vector3.new(x, y, z), axis = axis, tilt = tilt or 0})
+	end
+	local function both(x, y, z, axis, tilt)   -- تفصيل بالجهتين
+		add(x, y, z, axis, tilt)
+		add(-x, y, z, axis, tilt)
+	end
+
+	-- ===== الشكل الأساسي =====
+	-- 1) الشريحة: صفين × 20 = 40
+	for z = 2, -17 do
+		add(0, 7, z, "Z")
+		add(0, 8, z, "Z")
+	end
+
+	-- 2) الإطار (صف علوي 18 + غطاء الغبار 10) = 28
+	for z = 1, -16, -1 do add(0, 6, z, "Z") end
+	for z = -6, -15, -1 do add(0, 5, z, "Z") end
+
+	-- 3) المقبض: 4 أعمدة × 13 صف = 52 (مايل للخلف)
+	for y = 4, -8, -1 do
+		local shift = (4 - y) * 0.2
+		for c = 0, 3 do add(0, y, 1 - c + shift, "Y", RAKE) end
+	end
+
+	-- 4) حلقة الزناد (منحنية) = 8
+	for i = 0, 2 do add(0, 4.2 - i * 0.8, -10, "Y") end
+	for i = 0, 3 do add(0, 1.8, -9.5 + i, "Z") end
+	add(0, 2.4, -5.5, "Y")
+
+	-- 5) قاعدة الخزنة = 6
+	for i = 0, 5 do add(0, -9.2, 0.2 + i * 0.8, "Z") end
+
+	-- 6) ظهر المقبض (Beavertail) = 4
+	for y = 5, 2, -1 do add(0, y, 3, "Y", RAKE) end
+
+	-- ===== التفاصيل =====
+	-- 7) فوهة الماسورة = 4
+	for i = 0, 3 do add(0, 7.5, -18 - i, "Z") end
+
+	-- 8) الشعيرة الأمامية = 3
+	for i = 0, 2 do add(0, 9 + i * 0.8, -16.5, "Y") end
+
+	-- 9) الشعيرة الخلفية (فتحة التصويب) = 3
+	add(-0.7, 9.5, 1.5, "Y")
+	add(0.7, 9.5, 1.5, "Y")
+	add(0, 9, 1.5, "Y")
+
+	-- 10) المطرقة = 4
+	add(0, 8.5, 2.8, "Y")
+	add(0, 9.2, 3.2, "Y", 20)
+	add(0, 9.8, 3.4, "Y", 35)
+	add(0, 10.2, 3.2, "Z")
+
+	-- 11) الزناد = 3
+	add(0, 4, -6.5, "Y", -15)
+	add(0, 3.3, -6.2, "Y", -20)
+	add(0, 2.6, -5.9, "Y", -25)
+
+	-- 12) تسنين الشريحة الخلفي (6 أعمدة × جهتين) = 12
+	for i = 0, 5 do both(RAISE, 7.5, 0.5 - i * 0.6, "Y") end
+
+	-- 13) تسنين الشريحة الأمامي (4 × جهتين) = 8
+	for i = 0, 3 do both(RAISE, 7.5, -13.5 - i * 0.6, "Y") end
+
+	-- 14) فتحة طرد الظرف (الجهة اليمين) = 4
+	for z = -6, -9, -1 do add(RAISE, 7.5, z, "Z") end
+
+	-- 15) قفل الشريحة (Slide stop) = 2
+	add(RAISE, 5.8, -4, "Z")
+	add(RAISE, 5.8, -5, "Z")
+
+	-- 16) زر تحرير الخزنة + الأمان = 2
+	add(RAISE, 3, -3.2, "Y")
+	add(-RAISE, 5.3, 2, "Z")
+
+	-- 17) ألواح المقبض الجانبية: 2×4 لكل جهة = 16
+	for y = 2, -1, -1 do
+		local shift = (4 - y) * 0.2
+		both(RAISE, y, -0.2 + shift, "Y", RAKE)
+		both(RAISE, y, -1.0 + shift, "Y", RAKE)
+	end
+
+	-- 18) حلقة الحبل أسفل المقبض = 1
+	add(0, -8.4, 2.4, "Z")
+
+	-- تكميل: أي نقص يتعوض بمسطرة تحت الماسورة (Rail) عشان العدد يطلع بالضبط
+	local r = 0
+	while #L < TOTAL do
+		add(0, 4, -6 - r, "Z")
+		r = r + 1
+	end
+	while #L > TOTAL do table.remove(L) end
+
+	return L
+end
+
+-- ===== إيقاف =====
+local function disable()
+	active = false
+	local _, _, _, backpack = getParts()
+	for i, tool in ipairs(tools) do
+		if tool.Parent then
+			tool.Grip = origGrips[tool] or CFrame.new()
+			for part, v in pairs(origCollide[tool] or {}) do
+				if part.Parent then part.CanCollide = v end
+			end
+			if backpack then tool.Parent = backpack end
+		end
+		if i % BATCH == 0 then task.wait() end
+	end
+	tools = {}
+end
+
+-- ===== تشغيل =====
+local function enable()
+	local character, humanoid, root, backpack, hand = getParts()
+	if not (character and humanoid and root and backpack and hand) then return false end
+
+	humanoid:UnequipTools()
+
+	tools, origGrips, origCollide = {}, {}, {}
+	for _, item in ipairs(backpack:GetChildren()) do
+		if item:IsA("Tool") then
+			table.insert(tools, item)
+		end
+	end
+	table.sort(tools, function(a, b) return a.Name:lower() < b.Name:lower() end)
+
+	local layout = buildGun()
+	for i = #tools, #layout + 1, -1 do table.remove(tools, i) end
+	if #tools == 0 then return false end
+
+	local gripAtt = hand:FindFirstChild("RightGripAttachment")
+	local gw = gripAtt and gripAtt.WorldCFrame or hand.CFrame
+	local rootCF = root.CFrame
+	local origin = rootCF:PointToObjectSpace(gw.Position)
+	local dirSign = AIM_FLIP and -1 or 1
+
+	-- الـ Grip يتحسب مرة وحدة: المسدس ثابت على يدك بدون لاق
+	for i, tool in ipairs(tools) do
+		origGrips[tool] = tool.Grip
+		origCollide[tool] = {}
+		for _, d in ipairs(tool:GetDescendants()) do
+			if d:IsA("BasePart") then
+				origCollide[tool][d] = d.CanCollide
+				d.CanCollide = false
+			end
+		end
+
+		local part = layout[i]
+		local p = (part.pos - GRIP_CENTER) * SCALE
+		p = Vector3.new(p.X * dirSign, p.Y, p.Z * dirSign)
+
+		local cf = CFrame.new(origin + p)
+			* CFrame.Angles(math.rad(part.tilt) * dirSign, 0, 0)
+			* orient(tool, part.axis)
+		tool.Grip = gw:ToObjectSpace(rootCF * cf):Inverse()
+	end
+
+	active = true
+
+	humanoid.Died:Once(function()
+		if active then
+			disable()
+			setButton(false)
+		end
+	end)
+
+	for i, tool in ipairs(tools) do
+		if not active then break end
+		tool.Parent = character
+		if i % BATCH == 0 then task.wait() end
+	end
+	return true
+end
+
+button.MouseButton1Click:Connect(function()
+	if busy then return end
+	busy = true
+	if active then
+		setButton(false)
+		disable()
+	else
+		if enable() then setButton(true) end
+	end
+	busy = false
+end)
+
+player.CharacterAdded:Connect(function()
+	active = false
+	tools = {}
+	setButton(false)
+end)
