@@ -36,3 +36,10 @@ local Button = Tab:CreateButton({
 loadstring(game:HttpGet("https://raw.githubusercontent.com/aliazayduazaydu-cpu/Tools/refs/heads/main/Hand"))()
    end,
 })
+
+local Button = Tab:CreateButton({
+   Name = "hand",
+   Callback = function()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/aliazayduazaydu-cpu/Tools/refs/heads/main/Auto"))()
+   end,
+})
