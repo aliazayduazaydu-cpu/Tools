@@ -1,0 +1,223 @@
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local player = Players.LocalPlayer
+
+-- ===== الإعدادات =====
+local SHAFT_COUNT  = 50    -- العمود: 50 أداة
+local PALM_SIDE    = 10    -- الكف مربع 10×10 = 100 أداة
+local FINGER_COUNT = 5     -- عدد الأصابع
+local FINGER_LEN   = 6     -- أدوات كل إصبع (5×6 = 30)
+local BATCH        = 80    -- تجهيز 80 أداة كل دفعة
+
+local SHAFT_SP     = 0.6   -- المسافة بين أدوات العمود
+local PALM_SP      = 1.2   -- المسافة بين أدوات الكف
+local FINGER_SP    = 1.2   -- المسافة بين أدوات الأصابع
+local PALM_FRONT   = 1.5   -- بُعد الكف قدام العمود
+local FLIP_TOOLS   = false -- لو رؤوس الأدوات مقلوبة خلها true
+
+-- ===== الحالة =====
+local active, busy = false, false
+local tools, origGrips, origCollide = {}, {}, {}
+
+local function getParts()
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	local hand = character and (character:FindFirstChild("RightHand") or character:FindFirstChild("Right Arm"))
+	return character, humanoid, root, backpack, hand
+end
+
+-- ===== الواجهة =====
+local gui = Instance.new("ScreenGui")
+gui.Name = "HandGui"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local button = Instance.new("TextButton")
+button.Size = UDim2.fromOffset(170, 48)
+button.Position = UDim2.new(0.5, -85, 0, 20)
+button.BackgroundColor3 = Color3.fromRGB(120, 60, 200)
+button.TextColor3 = Color3.new(1, 1, 1)
+button.Font = Enum.Font.SourceSansBold
+button.TextSize = 22
+button.Text = "الكف: إيقاف"
+button.AutoButtonColor = false
+button.Parent = gui
+
+Instance.new("UICorner", button).CornerRadius = UDim.new(0, 14)
+
+local stroke = Instance.new("UIStroke", button)
+stroke.Color = Color3.new(1, 1, 1)
+stroke.Transparency = 0.6
+stroke.Thickness = 2
+
+local gradient = Instance.new("UIGradient", button)
+gradient.Color = ColorSequence.new(Color3.fromRGB(150, 90, 255), Color3.fromRGB(70, 130, 255))
+gradient.Rotation = 45
+
+local function tween(obj, props)
+	TweenService:Create(obj, TweenInfo.new(0.2, Enum.EasingStyle.Quad), props):Play()
+end
+
+button.MouseEnter:Connect(function()
+	tween(button, {Size = UDim2.fromOffset(180, 52), Position = UDim2.new(0.5, -90, 0, 18)})
+end)
+button.MouseLeave:Connect(function()
+	tween(button, {Size = UDim2.fromOffset(170, 48), Position = UDim2.new(0.5, -85, 0, 20)})
+end)
+
+local function setButton(on)
+	button.Text = on and "الكف: تشغيل" or "الكف: إيقاف"
+	tween(button, {BackgroundColor3 = on and Color3.fromRGB(60, 200, 120) or Color3.fromRGB(120, 60, 200)})
+end
+
+task.spawn(function()
+	while gui.Parent do
+		gradient.Rotation = (gradient.Rotation + 1) % 360
+		task.wait(0.03)
+	end
+end)
+
+-- ===== تدوير الأداة عشان طولها يصير عمودي =====
+local function uprightRot(tool)
+	local handle = tool:FindFirstChild("Handle")
+	local rot = CFrame.new()
+	if handle and handle:IsA("BasePart") then
+		local s = handle.Size
+		if s.Z >= s.X and s.Z >= s.Y then
+			rot = CFrame.Angles(math.rad(-90), 0, 0)   -- الطول على Z
+		elseif s.X >= s.Y and s.X >= s.Z then
+			rot = CFrame.Angles(0, 0, math.rad(90))    -- الطول على X
+		end                                            -- الطول على Y: ما يحتاج
+	end
+	if FLIP_TOOLS then rot = CFrame.Angles(math.pi, 0, 0) * rot end
+	return rot
+end
+
+-- ===== أماكن الكف (نسبة لمكان اليد، وقت التشغيل مرة وحدة) =====
+-- المحاور: +X يمين، +Y فوق، -Z قدام
+local function buildLayout()
+	local layout = {}
+
+	-- 1) العمود (طوله 50 أداة، كثافة 1)
+	for i = 0, SHAFT_COUNT - 1 do
+		table.insert(layout, Vector3.new(0, i * SHAFT_SP, 0))
+	end
+	local palmBase = SHAFT_COUNT * SHAFT_SP
+
+	-- 2) الكف: مربع كامل قدام (10×10)
+	for r = 0, PALM_SIDE - 1 do
+		for c = 0, PALM_SIDE - 1 do
+			table.insert(layout, Vector3.new(
+				(c - (PALM_SIDE - 1) / 2) * PALM_SP,
+				palmBase + (r + 0.5) * PALM_SP,
+				-PALM_FRONT
+			))
+		end
+	end
+	local palmTop = palmBase + PALM_SIDE * PALM_SP
+
+	-- 3) الأصابع (5 أصابع × 6 أدوات = 30)
+	for f = 0, FINGER_COUNT - 1 do
+		local x = (f - (FINGER_COUNT - 1) / 2) * (PALM_SIDE * PALM_SP / FINGER_COUNT)
+		for j = 0, FINGER_LEN - 1 do
+			table.insert(layout, Vector3.new(x, palmTop + (j + 0.5) * FINGER_SP, -PALM_FRONT))
+		end
+	end
+
+	return layout
+end
+
+-- ===== إيقاف =====
+local function disable()
+	active = false
+	local _, _, _, backpack = getParts()
+	for i, tool in ipairs(tools) do
+		if tool.Parent then
+			tool.Grip = origGrips[tool] or CFrame.new()
+			for part, v in pairs(origCollide[tool] or {}) do
+				if part.Parent then part.CanCollide = v end
+			end
+			if backpack then tool.Parent = backpack end
+		end
+		if i % BATCH == 0 then task.wait() end
+	end
+	tools = {}
+end
+
+-- ===== تشغيل =====
+local function enable()
+	local character, humanoid, root, backpack, hand = getParts()
+	if not (character and humanoid and root and backpack and hand) then return false end
+
+	humanoid:UnequipTools()
+
+	tools, origGrips, origCollide = {}, {}, {}
+	for _, item in ipairs(backpack:GetChildren()) do
+		if item:IsA("Tool") then
+			table.insert(tools, item)
+		end
+	end
+	table.sort(tools, function(a, b) return a.Name:lower() < b.Name:lower() end)
+
+	local layout = buildLayout()
+	for i = #tools, #layout + 1, -1 do table.remove(tools, i) end
+	if #tools == 0 then return false end
+
+	local gripAtt = hand:FindFirstChild("RightGripAttachment")
+	local gw = gripAtt and gripAtt.WorldCFrame or hand.CFrame
+	local rootCF = root.CFrame
+
+	-- مكان بداية الكف = مسكة يد اللاعب
+	local origin = rootCF:PointToObjectSpace(gw.Position)
+
+	-- نحسب كل الـ Grip مرة وحدة (بدون انميشن وبدون لاق)
+	for i, tool in ipairs(tools) do
+		origGrips[tool] = tool.Grip
+		origCollide[tool] = {}
+		for _, d in ipairs(tool:GetDescendants()) do
+			if d:IsA("BasePart") then
+				origCollide[tool][d] = d.CanCollide
+				d.CanCollide = false
+			end
+		end
+
+		local cf = CFrame.new(origin + layout[i]) * uprightRot(tool)
+		tool.Grip = gw:ToObjectSpace(rootCF * cf):Inverse()
+	end
+
+	active = true
+
+	humanoid.Died:Once(function()
+		if active then
+			disable()
+			setButton(false)
+		end
+	end)
+
+	for i, tool in ipairs(tools) do
+		if not active then break end
+		tool.Parent = character
+		if i % BATCH == 0 then task.wait() end
+	end
+	return true
+end
+
+button.MouseButton1Click:Connect(function()
+	if busy then return end
+	busy = true
+	if active then
+		setButton(false)
+		disable()
+	else
+		if enable() then setButton(true) end
+	end
+	busy = false
+end)
+
+player.CharacterAdded:Connect(function()
+	active = false
+	tools = {}
+	setButton(false)
+end)
