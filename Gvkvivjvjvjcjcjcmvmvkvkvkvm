@@ -50,3 +50,163 @@ local Button = Tab:CreateButton({
 loadstring(game:HttpGet("https://raw.githubusercontent.com/aliazayduazaydu-cpu/Tools/refs/heads/main/%D9%85%D8%B3%D8%AF%D8%B3"))()
    end,
 })
+
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+local LIMITS = {
+	radius  = {0.5, 500},
+	spacing = {0.1, 100},
+	speed   = {0, 500},
+	jump    = {0, 1000},
+}
+
+local radius, spacing = 5, 1.5
+
+local function clampVal(v, key)
+	v = tonumber(v)
+	if not v then return nil end
+	return math.clamp(v, LIMITS[key][1], LIMITS[key][2])
+end
+
+local function getHumanoid()
+	return player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+end
+
+local function getTools()
+	local tools = {}
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if backpack then
+		for _, v in ipairs(backpack:GetChildren()) do
+			if v:IsA("Tool") then table.insert(tools, v) end
+		end
+	end
+	table.sort(tools, function(a, b) return a.Name:lower() < b.Name:lower() end)
+	return tools
+end
+
+local function unequipAll()
+	local hum = getHumanoid()
+	if hum then hum:UnequipTools() end
+end
+
+local function arrange(shape)
+	local char = player.Character
+	if not char then return end
+	unequipAll()
+	local tools = getTools()
+	local n = #tools
+	if n == 0 then return end
+	local phi = math.pi * (3 - math.sqrt(5))
+	for i, tool in ipairs(tools) do
+		local offset
+		if shape == "sphere" then
+			local y = n > 1 and (1 - ((i - 1) / (n - 1)) * 2) or 0
+			local r = math.sqrt(1 - y * y)
+			local t = phi * (i - 1)
+			offset = Vector3.new(math.cos(t) * r, y, math.sin(t) * r) * radius
+		else
+			offset = Vector3.new((i - (n + 1) / 2) * spacing, 0, 0)
+		end
+		tool.Grip = CFrame.new(offset):Inverse()
+		tool.Parent = char
+	end
+end
+
+local Window = Rayfield:CreateWindow({
+	Name = "Tool Panel",
+	LoadingTitle = "Tool Panel",
+	LoadingSubtitle = "Rayfield",
+	ConfigurationSaving = { Enabled = false },
+})
+
+-- ===== Tools =====
+local ToolsTab = Window:CreateTab("Tools")
+ToolsTab:CreateButton({ Name = "Sphere", Callback = function() arrange("sphere") end })
+ToolsTab:CreateButton({ Name = "Line", Callback = function() arrange("line") end })
+ToolsTab:CreateButton({ Name = "Unequip All", Callback = unequipAll })
+
+local radiusSlider, spacingSlider
+
+radiusSlider = ToolsTab:CreateSlider({
+	Name = "Sphere Radius", Range = {1, 100}, Increment = 1, CurrentValue = radius,
+	Callback = function(v) radius = v end,
+})
+ToolsTab:CreateInput({
+	Name = "Radius (max 500)",
+	PlaceholderText = "اكتب الرقم هنا",
+	RemoveTextAfterFocusLost = true,
+	Callback = function(text)
+		local v = clampVal(text, "radius")
+		if v then
+			radius = v
+			pcall(function() radiusSlider:Set(math.min(v, 100)) end)
+		end
+	end,
+})
+
+spacingSlider = ToolsTab:CreateSlider({
+	Name = "Line Spacing", Range = {0.5, 20}, Increment = 0.5, CurrentValue = spacing,
+	Callback = function(v) spacing = v end,
+})
+ToolsTab:CreateInput({
+	Name = "Spacing (max 100)",
+	PlaceholderText = "اكتب الرقم هنا",
+	RemoveTextAfterFocusLost = true,
+	Callback = function(text)
+		local v = clampVal(text, "spacing")
+		if v then
+			spacing = v
+			pcall(function() spacingSlider:Set(math.min(v, 20)) end)
+		end
+	end,
+})
+
+-- ===== Player =====
+local PlayerTab = Window:CreateTab("Player")
+
+local speedSlider, jumpSlider
+
+local function setSpeed(v)
+	local hum = getHumanoid()
+	if hum then hum.WalkSpeed = v end
+end
+
+local function setJump(v)
+	local hum = getHumanoid()
+	if hum then hum.UseJumpPower = true; hum.JumpPower = v end
+end
+
+speedSlider = PlayerTab:CreateSlider({
+	Name = "WalkSpeed", Range = {16, 150}, Increment = 1, CurrentValue = 16,
+	Callback = setSpeed,
+})
+PlayerTab:CreateInput({
+	Name = "WalkSpeed (max 500)",
+	PlaceholderText = "اكتب الرقم هنا",
+	RemoveTextAfterFocusLost = true,
+	Callback = function(text)
+		local v = clampVal(text, "speed")
+		if v then
+			setSpeed(v)
+			pcall(function() speedSlider:Set(math.min(v, 150)) end)
+		end
+	end,
+})
+
+jumpSlider = PlayerTab:CreateSlider({
+	Name = "JumpPower", Range = {50, 300}, Increment = 5, CurrentValue = 50,
+	Callback = setJump,
+})
+PlayerTab:CreateInput({
+	Name = "JumpPower (max 1000)",
+	PlaceholderText = "اكتب الرقم هنا",
+	RemoveTextAfterFocusLost = true,
+	Callback = function(text)
+		local v = clampVal(text, "jump")
+		if v then
+			setJump(v)
+			pcall(function() jumpSlider:Set(math.min(v, 300)) end)
+		end
+	end,
+})
