@@ -27,31 +27,9 @@ local Window = Rayfield:CreateWindow({
 --________________________________________________________________________________________________________
 --________________________________________________________________________________________________________
 
-local Tab = Window:CreateTab("Tools", "rewind")
-local Section = Tab:CreateSection("Section Example")
-
-local Button = Tab:CreateButton({
-   Name = "hand",
-   Callback = function()
-loadstring(game:HttpGet("https://raw.githubusercontent.com/aliazayduazaydu-cpu/Tools/refs/heads/main/Hand"))()
-   end,
-})
-
-local Button = Tab:CreateButton({
-   Name = "كفوف",
-   Callback = function()
-loadstring(game:HttpGet("https://raw.githubusercontent.com/aliazayduazaydu-cpu/Tools/refs/heads/main/Auto"))()
-   end,
-})
-
-local Button = Tab:CreateButton({
-   Name = "gun",
-   Callback = function()
-loadstring(game:HttpGet("https://raw.githubusercontent.com/aliazayduazaydu-cpu/Tools/refs/heads/main/%D9%85%D8%B3%D8%AF%D8%B3"))()
-   end,
-})
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 
 local LIMITS = {
@@ -59,9 +37,18 @@ local LIMITS = {
 	spacing = {0.1, 100},
 	speed   = {0, 500},
 	jump    = {0, 1000},
+	box     = {1, 5000},
 }
 
 local radius, spacing = 5, 1.5
+local boxSize = 500
+local MAX_TOOLS = 5000
+
+-- إعدادات اللوب
+local loopConn = nil
+local updatesPerSec = 0   -- 0 = كل فريم (أقصى سرعة)
+local batchSize = 5000    -- قوة اللوب: كم أداة تتحدث بكل دورة
+local cachedTools, lastRefresh, cursor, acc = {}, 0, 1, 0
 
 local function clampVal(v, key)
 	v = tonumber(v)
@@ -82,6 +69,21 @@ local function getTools()
 		end
 	end
 	table.sort(tools, function(a, b) return a.Name:lower() < b.Name:lower() end)
+	return tools
+end
+
+local function getAllTools()
+	local tools = {}
+	for _, container in ipairs({player:FindFirstChildOfClass("Backpack"), player.Character}) do
+		if container then
+			for _, v in ipairs(container:GetChildren()) do
+				if v:IsA("Tool") then
+					tools[#tools + 1] = v
+					if #tools >= MAX_TOOLS then return tools end
+				end
+			end
+		end
+	end
 	return tools
 end
 
@@ -113,6 +115,57 @@ local function arrange(shape)
 	end
 end
 
+-- دورة واحدة من التوزيع العشوائي (سريعة، بدون انتظار)
+local function randomStep(count)
+	local char = player.Character
+	if not char then return end
+
+	local now = os.clock()
+	if now - lastRefresh > 0.5 then
+		cachedTools = getAllTools()
+		lastRefresh = now
+		cursor = 1
+	end
+
+	local n = #cachedTools
+	if n == 0 then return end
+
+	local half = boxSize / 2
+	local rnd = math.random
+	for _ = 1, math.min(count, n) do
+		local tool = cachedTools[cursor]
+		cursor = cursor % n + 1
+		if tool then
+			tool.Grip = CFrame.new(
+				rnd() * boxSize - half,
+				rnd() * boxSize - half,
+				rnd() * boxSize - half
+			):Inverse()
+			if tool.Parent ~= char then tool.Parent = char end
+		end
+	end
+end
+
+local function startLoop()
+	if loopConn then return end
+	acc = 0
+	loopConn = RunService.Heartbeat:Connect(function(dt)
+		if updatesPerSec > 0 then
+			acc += dt
+			if acc < 1 / updatesPerSec then return end
+			acc = 0
+		end
+		randomStep(batchSize)
+	end)
+end
+
+local function stopLoop()
+	if loopConn then
+		loopConn:Disconnect()
+		loopConn = nil
+	end
+end
+
 local Window = Rayfield:CreateWindow({
 	Name = "Tool Panel",
 	LoadingTitle = "Tool Panel",
@@ -124,7 +177,8 @@ local Window = Rayfield:CreateWindow({
 local ToolsTab = Window:CreateTab("Tools")
 ToolsTab:CreateButton({ Name = "Sphere", Callback = function() arrange("sphere") end })
 ToolsTab:CreateButton({ Name = "Line", Callback = function() arrange("line") end })
-ToolsTab:CreateButton({ Name = "Unequip All", Callback = unequipAll })
+ToolsTab:CreateButton({ Name = "Random Box", Callback = function() lastRefresh = 0; randomStep(MAX_TOOLS) end })
+ToolsTab:CreateButton({ Name = "Unequip All", Callback = function() stopLoop(); unequipAll() end })
 
 local radiusSlider, spacingSlider
 
@@ -160,6 +214,37 @@ ToolsTab:CreateInput({
 			pcall(function() spacingSlider:Set(math.min(v, 20)) end)
 		end
 	end,
+})
+
+-- ===== Random Loop =====
+local LoopTab = Window:CreateTab("Random Loop")
+
+LoopTab:CreateToggle({
+	Name = "Loop Random (Fast)",
+	CurrentValue = false,
+	Callback = function(on)
+		if on then startLoop() else stopLoop() end
+	end,
+})
+
+LoopTab:CreateInput({
+	Name = "Box Size (max 5000)",
+	PlaceholderText = "اكتب الرقم هنا",
+	RemoveTextAfterFocusLost = true,
+	Callback = function(text)
+		local v = clampVal(text, "box")
+		if v then boxSize = v end
+	end,
+})
+
+LoopTab:CreateSlider({
+	Name = "Updates/sec (0 = Max)", Range = {0, 240}, Increment = 5, CurrentValue = 0,
+	Callback = function(v) updatesPerSec = v end,
+})
+
+LoopTab:CreateSlider({
+	Name = "Power (tools per update)", Range = {50, 5000}, Increment = 50, CurrentValue = 5000,
+	Callback = function(v) batchSize = v end,
 })
 
 -- ===== Player =====
